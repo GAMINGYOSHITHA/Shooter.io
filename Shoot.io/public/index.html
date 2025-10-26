@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Python Multiplayer .io Game</title>
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<style>
+  html,body { height:100%; margin:0; font-family: Arial, sans-serif; background:#111; color:#eee; overflow:hidden; }
+  #ui { position: absolute; left: 12px; top: 12px; z-index: 20; }
+  #leaderboard { background: rgba(0,0,0,0.5); padding: 8px; border-radius:6px; min-width:150px; }
+  canvas { display:block; margin:0 auto; background:#0d1220; width:100vw; height:100vh; }
+  #controls { position: absolute; right: 12px; top: 12px; z-index:20; background: rgba(0,0,0,0.5); padding:8px; border-radius:6px; }
+  #nameInput { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 30; background: rgba(0,0,0,0.8); padding: 20px; border-radius: 8px; text-align: center; }
+  .muted { opacity:0.8; font-size:13px; }
+  button { background: #4CAF50; border: none; color: white; padding: 8px 16px; text-align: center; text-decoration: none; display: inline-block; font-size: 16px; margin: 4px 2px; cursor: pointer; border-radius: 4px; }
+  input { padding: 8px; margin: 8px; border-radius: 4px; border: 1px solid #ccc; }
+  #connectionStatus { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.5); padding: 4px 12px; border-radius: 4px; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="ui">
+  <div id="leaderboard"><strong>Leaderboard</strong><ol id="lbList"></ol></div>
+</div>
+<div id="controls" class="muted">
+  Controls: WASD / Arrow keys — Aim with mouse — Click to shoot
+</div>
+<div id="connectionStatus">Connecting...</div>
+<div id="nameInput">
+  <h3>Enter Your Name</h3>
+  <input type="text" id="playerName" maxlength="15" placeholder="Player Name" />
+  <br>
+  <button id="startGame">Start Game</button>
+</div>
+<canvas id="c"></canvas>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+<script>
+// Connect to server
+const socket = io();
+
+// Game state from server
+let gameState = {};
+let playerId = null;
+let CONFIG = {};
+
+// Canvas setup
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Input state
+const keys = {};
+const mouse = { x: 0, y: 0, down: false, worldX: 0, worldY: 0 };
+
+// Camera
+const camera = { x: 0, y: 0 };
+
+// Utility functions
+function resize() {
+  canvas.width = Math.max(800, innerWidth);
+  canvas.height = Math.max(600, innerHeight);
+}
+
+function screenToWorld(sx, sy) {
+  const w = canvas.width, h = canvas.height;
+  const wx = sx - w/2 + camera.x;
+  const wy = sy - h/2 + camera.y;
+  return { x: wx, y: wy };
+}
+
+// Event listeners
+addEventListener('resize', resize);
+resize();
+
+// Input handling
+addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  e.preventDefault(); // Prevent default browser behavior
+});
+
+addEventListener('keyup', e => {
+  keys[e.key.toLowerCase()] = false;
+  e.preventDefault();
+});
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  mouse.x = e.clientX - rect.left;
+  mouse.y = e.clientY - rect.top;
+  const worldPos = screenToWorld(mouse.x, mouse.y);
+  mouse.worldX = worldPos.x;
+  mouse.worldY = worldPos.y;
+});
+
+canvas.addEventListener('mousedown', e => {
+  mouse.down = true;
+  e.preventDefault();
+});
+
+canvas.addEventListener('mouseup', e => {
+  mouse.down = false;
+  e.preventDefault();
+});
+
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// Name input handling
+document.getElementById('startGame').addEventListener('click', () => {
+  const name = document.getElementById('playerName').value || 'Player';
+  socket.emit('changeName', name);
+  document.getElementById('nameInput').style.display = 'none';
+  canvas.focus();
+});
+
+// Socket event handlers
+socket.on('connect', () => {
+  document.getElementById('connectionStatus').textContent = 'Connected';
+  document.getElementById('connectionStatus').style.background = 'rgba(0, 255, 0, 0.3)';
+});
+
+socket.on('disconnect', () => {
+  document.getElementById('connectionStatus').textContent = 'Disconnected';
+  document.getElementById('connectionStatus').style.background = 'rgba(255, 0, 0, 0.3)';
+});
+
+socket.on('init', (data) => {
+  playerId = data.playerId;
+  CONFIG = data.CONFIG;
+  console.log('Game initialized with player ID:', playerId);
+});
+
+socket.on('gameState', (state) => {
+  gameState = state;
+  
+  // Update camera to follow player
+  if (gameState.players && gameState.players[playerId]) {
+    const player = gameState.players[playerId];
+    camera.x = player.x;
+    camera.y = player.y;
+  }
+  
+  // Update leaderboard
+  updateLeaderboard();
+});
+
+// Game loop
+function gameLoop() {
+  // Send input to server
+  if (playerId) {
+    socket.emit('playerInput', { keys, mouse });
+  }
+  
+  // Render game
+  render();
+  
+  requestAnimationFrame(gameLoop);
+}
+
+// Rendering
+function render() {
+  const w = canvas.width, h = canvas.height;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  
+  if (!CONFIG.worldSize) return;
+  
+  // Apply camera transform
+  ctx.translate(w/2, h/2);
+  ctx.translate(-camera.x, -camera.y);
+  
+  // Draw grid background
+  const gridSize = 200;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = '#0b1830';
+  for (let gx = -CONFIG.worldSize/2; gx <= CONFIG.worldSize/2; gx += gridSize) {
+    ctx.beginPath();
+    ctx.moveTo(gx, -CONFIG.worldSize/2);
+    ctx.lineTo(gx, CONFIG.worldSize/2);
+    ctx.stroke();
+  }
+  for (let gy = -CONFIG.worldSize/2; gy <= CONFIG.worldSize/2; gy += gridSize) {
+    ctx.beginPath();
+    ctx.moveTo(-CONFIG.worldSize/2, gy);
+    ctx.lineTo(CONFIG.worldSize/2, gy);
+    ctx.stroke();
+  }
+  
+  // Draw players
+  if (gameState.players) {
+    for (let id in gameState.players) {
+      const player = gameState.players[id];
+      ctx.save();
+      ctx.translate(player.x, player.y);
+      
+      // Shadow
+      ctx.beginPath();
+      ctx.fillStyle = 'rgba(0,0,0,0.25)';
+      ctx.arc(0, 6, player.r + 6, 0, Math.PI*2);
+      ctx.fill();
+      
+      // Player body
+      ctx.beginPath();
+      ctx.fillStyle = player.color;
+      ctx.arc(0, 0, player.r, 0, Math.PI*2);
+      ctx.fill();
+      
+      // Player name
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '12px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText(player.name, 0, -player.r - 8);
+      
+      // Highlight current player
+      if (id == playerId) {
+        ctx.strokeStyle = '#ffff00';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(0, 0, player.r + 3, 0, Math.PI*2);
+        ctx.stroke();
+      }
+      
+      ctx.restore();
+    }
+  }
+  
+  // Draw bullets
+  if (gameState.bullets) {
+    for (const bullet of gameState.bullets) {
+      ctx.beginPath();
+      ctx.fillStyle = '#ffdca8';
+      ctx.arc(bullet.x, bullet.y, bullet.r, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  
+  // Reset transform for HUD
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  
+  // Draw crosshair
+  ctx.beginPath();
+  ctx.strokeStyle = '#fff';
+  ctx.lineWidth = 1;
+  ctx.arc(mouse.x, mouse.y, 6, 0, Math.PI*2);
+  ctx.stroke();
+  
+  // Draw score
+  if (gameState.players && gameState.players[playerId]) {
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '16px Arial';
+    ctx.textAlign = 'left';
+    ctx.fillText(`Score: ${gameState.players[playerId].score || 0}`, 20, 30);
+    
+    // Draw player count
+    ctx.fillText(`Players: ${Object.keys(gameState.players).length}`, 20, 50);
+  }
+}
+
+// Leaderboard
+function updateLeaderboard() {
+  if (!gameState.players) return;
+  
+  const players = Object.values(gameState.players);
+  players.sort((a, b) => (b.score || 0) - (a.score || 0));
+  
+  const lb = document.getElementById('lbList');
+  lb.innerHTML = '';
+  
+  for (let i = 0; i < Math.min(8, players.length); i++) {
+    const player = players[i];
+    const li = document.createElement('li');
+    li.textContent = `${player.name} — ${player.score || 0}`;
+    
+    // Highlight current player
+    if (player.id == playerId) {
+      li.style.fontWeight = 'bold';
+      li.style.color = '#ffff00';
+    }
+    
+    lb.appendChild(li);
+  }
+}
+
+// Start the game loop
+gameLoop();
+
+// Focus canvas for input
+canvas.tabIndex = 1000;
+canvas.style.outline = 'none';
+
+// Handle page visibility change
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) {
+    // Clear keys when tab becomes inactive
+    Object.keys(keys).forEach(key => {
+      keys[key] = false;
+    });
+    mouse.down = false;
+  }
+});
+</script>
+</body>
+</html>
